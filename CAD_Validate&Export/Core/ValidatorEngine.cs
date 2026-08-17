@@ -152,7 +152,7 @@ namespace CADValidator.Core
             }
             else
             {
-                results.Add(new ValidationResult(cleanFileName, fileType, "Naming", ValidationStatus.Fail, "Invalid format. Expected: XXX-000_X_TYPE (e.g., BVS-100_A_ASM)."));
+                results.Add(new ValidationResult(cleanFileName, fileType, "Naming", ValidationStatus.Fail, "Invalid format. Expected: XXX-000_X_TYPE."));
                 return false;
             }
         }
