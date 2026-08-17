@@ -1,7 +1,7 @@
-﻿using NXOpen;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using NXOpen;
 
 namespace CADValidator.Core
 {
@@ -10,7 +10,6 @@ namespace CADValidator.Core
         public static void RunSmartExport(List<ExportCandidate> candidates, string exportFolder)
         {
             Session theSession = Session.GetSession();
-            NXOpen.UF.UFSession theUfSession = NXOpen.UF.UFSession.GetUFSession();
 
             int stepCount = 0;
             int pdfCount = 0;
@@ -51,99 +50,105 @@ namespace CADValidator.Core
             }
 
             // ====================================================================
-            // PHASE 2: PDF EXPORT (Screen Switching Suppressed)
+            // PHASE 2: PDF EXPORT (Requires Display Pipeline)
             // ====================================================================
-            bool isDisplaySuppressed = false;
-
-            try
+            foreach (ExportCandidate candidate in candidates)
             {
-                theUfSession.Disp.SetDisplay(NXOpen.UF.UFConstants.UF_DISP_SUPPRESS_DISPLAY);
-                isDisplaySuppressed = true;
-
-                foreach (ExportCandidate candidate in candidates)
+                if (candidate.FileType == "DRW" || candidate.FileType == "ASM")
                 {
-                    if (candidate.FileType == "DRW" || candidate.FileType == "ASM")
+                    PartLoadStatus loadStatus = null;
+                    Part exportPart = null;
+
+                    try
                     {
-                        PartLoadStatus loadStatus = null;
-                        Part exportPart = null;
-
-                        try
+                        foreach (Part loadedPart in theSession.Parts)
                         {
-                            foreach (Part loadedPart in theSession.Parts)
+                            if (loadedPart.Name.Equals(candidate.CleanName, StringComparison.OrdinalIgnoreCase))
                             {
-                                if (loadedPart.Name.Equals(candidate.CleanName, StringComparison.OrdinalIgnoreCase))
+                                exportPart = loadedPart;
+                                break;
+                            }
+                        }
+
+                        if (exportPart == null)
+                        {
+                            exportPart = (Part)theSession.Parts.OpenActiveDisplay(candidate.FullPath, DisplayPartOption.AllowAdditional, out loadStatus);
+                        }
+                        else
+                        {
+                            theSession.Parts.SetDisplay(exportPart, false, true, out loadStatus);
+                        }
+
+                        if (exportPart != null)
+                        {
+                            theSession.Parts.SetWork(exportPart);
+
+                            NXOpen.Drawings.DrawingSheet[] sheets = exportPart.DraftingDrawingSheets.ToArray();
+
+                            if (sheets.Length > 0)
+                            {
+                                theSession.ApplicationSwitchImmediate("UG_APP_DRAFTING");
+                                exportPart.Drafting.EnterDraftingApplication();
+
+                                try { exportPart.Views.WorkView.UpdateCustomSymbols(); } catch { }
+                                try { exportPart.Drafting.SetTemplateInstantiationIsComplete(true); } catch { }
+
+                                PrintPDFBuilder pdfBuilder = exportPart.PlotManager.CreatePrintPdfbuilder();
+                                pdfBuilder.Scale = 1.0;
+                                pdfBuilder.Size = PrintPDFBuilder.SizeOption.ScaleFactor;
+                                pdfBuilder.OutputText = PrintPDFBuilder.OutputTextOption.Polylines;
+                                pdfBuilder.RasterImages = true;
+
+                                // ====================================================================
+                                // THE FIX: DYNAMIC SHEET SIZING
+                                // ====================================================================
+                                NXOpen.NXObject[] nxSheets = new NXOpen.NXObject[sheets.Length];
+
+                                for (int i = 0; i < sheets.Length; i++)
                                 {
-                                    exportPart = loadedPart;
-                                    break;
+                                    sheets[i].Open();
+                                    nxSheets[i] = sheets[i];
                                 }
-                            }
 
-                            if (exportPart == null)
-                            {
-                                exportPart = (Part)theSession.Parts.OpenActiveDisplay(candidate.FullPath, DisplayPartOption.AllowAdditional, out loadStatus);
-                            }
-                            else
-                            {
-                                theSession.Parts.SetDisplay(exportPart, false, true, out loadStatus);
-                            }
-
-                            if (exportPart != null)
-                            {
-                                NXOpen.Drawings.DrawingSheet[] sheets = exportPart.DraftingDrawingSheets.ToArray();
-
-                                if (sheets.Length > 0)
+                                // Read the units and dimensions directly from the active sheet in NX
+                                if (sheets[0].Units == NXOpen.Drawings.DrawingSheet.Unit.Millimeters)
                                 {
-                                    theSession.ApplicationSwitchImmediate("UG_APP_DRAFTING");
-                                    exportPart.Drafting.EnterDraftingApplication();
-
-                                    try { exportPart.Views.WorkView.UpdateCustomSymbols(); } catch { }
-                                    try { exportPart.Drafting.SetTemplateInstantiationIsComplete(true); } catch { }
-
-                                    PrintPDFBuilder pdfBuilder = exportPart.PlotManager.CreatePrintPdfbuilder();
-                                    pdfBuilder.Scale = 1.0;
-                                    pdfBuilder.Size = PrintPDFBuilder.SizeOption.ScaleFactor;
-                                    pdfBuilder.OutputText = PrintPDFBuilder.OutputTextOption.Polylines;
+                                    pdfBuilder.Units = PrintPDFBuilder.UnitsOption.Metric;
+                                }
+                                else
+                                {
                                     pdfBuilder.Units = PrintPDFBuilder.UnitsOption.English;
-                                    pdfBuilder.XDimension = 8.5;
-                                    pdfBuilder.YDimension = 11.0;
-                                    pdfBuilder.RasterImages = true;
-
-                                    NXOpen.NXObject[] nxSheets = new NXOpen.NXObject[sheets.Length];
-                                    for (int i = 0; i < sheets.Length; i++) { nxSheets[i] = sheets[i]; }
-
-                                    pdfBuilder.SourceBuilder.SetSheets(nxSheets);
-
-                                    string pdfPath = Path.Combine(exportFolder, candidate.CleanName + ".pdf");
-
-                                    if (File.Exists(pdfPath)) File.Delete(pdfPath);
-
-                                    pdfBuilder.Filename = pdfPath;
-                                    pdfBuilder.Commit();
-                                    pdfBuilder.Destroy();
-                                    pdfCount++;
                                 }
+
+                                pdfBuilder.XDimension = sheets[0].Length;
+                                pdfBuilder.YDimension = sheets[0].Height;
+                                // ====================================================================
+
+                                pdfBuilder.SourceBuilder.SetSheets(nxSheets);
+
+                                string pdfPath = Path.Combine(exportFolder, candidate.CleanName + ".pdf");
+
+                                if (File.Exists(pdfPath)) File.Delete(pdfPath);
+
+                                pdfBuilder.Filename = pdfPath;
+                                pdfBuilder.Commit();
+                                pdfBuilder.Destroy();
+                                pdfCount++;
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            UI.GetUI().NXMessageBox.Show("PDF Error", NXMessageBox.DialogType.Error, $"Failed on {candidate.CleanName}: {ex.Message}");
-                        }
-                        finally
-                        {
-                            if (exportPart != null && (originalDisplayPart == null || !exportPart.Name.Equals(originalDisplayPart.Name, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                try { exportPart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null); } catch { }
-                            }
-                            if (loadStatus != null) loadStatus.Dispose();
                         }
                     }
-                }
-            }
-            finally
-            {
-                if (isDisplaySuppressed)
-                {
-                    theUfSession.Disp.SetDisplay(NXOpen.UF.UFConstants.UF_DISP_UNSUPPRESS_DISPLAY);
+                    catch (Exception ex)
+                    {
+                        UI.GetUI().NXMessageBox.Show("PDF Error", NXMessageBox.DialogType.Error, $"Failed on {candidate.CleanName}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (exportPart != null && (originalDisplayPart == null || !exportPart.Name.Equals(originalDisplayPart.Name, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            try { exportPart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null); } catch { }
+                        }
+                        if (loadStatus != null) loadStatus.Dispose();
+                    }
                 }
             }
 
@@ -153,7 +158,11 @@ namespace CADValidator.Core
             if (originalDisplayPart != null)
             {
                 PartLoadStatus restoreStatus = null;
-                try { theSession.Parts.SetDisplay(originalDisplayPart, false, true, out restoreStatus); }
+                try
+                {
+                    theSession.Parts.SetDisplay(originalDisplayPart, false, true, out restoreStatus);
+                    theSession.Parts.SetWork(originalDisplayPart);
+                }
                 catch { }
                 finally { if (restoreStatus != null) restoreStatus.Dispose(); }
             }
@@ -166,20 +175,7 @@ namespace CADValidator.Core
             // ====================================================================
             // 4. AGGRESSIVE MEMORY WIPE
             // ====================================================================
-            try
-            {
-                if (candidates != null)
-                {
-                    candidates.Clear();
-                    candidates = null;
-                }
-                exportFolder = string.Empty;
-
-                System.GC.Collect();
-                System.GC.WaitForPendingFinalizers();
-                System.GC.Collect();
-            }
-            catch { }
+            
         }
     }
 }

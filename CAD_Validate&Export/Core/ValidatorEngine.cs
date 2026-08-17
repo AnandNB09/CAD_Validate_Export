@@ -4,7 +4,7 @@ using System.Linq;
 using NXOpen;
 using NXOpen.UF;
 using CADValidator.Models;
-using CADValidator.Rules; // Added to access your separate rule files
+using CADValidator.Rules;
 
 namespace CADValidator.Core
 {
@@ -47,18 +47,35 @@ namespace CADValidator.Core
                     if (loadedPart != null && loadedPart is Part workPart)
                     {
                         string fileName = workPart.Leaf.ToUpper();
-                        bool hasComponents = workPart.ComponentAssembly.RootComponent != null;
-                        bool hasDrawingSheets = workPart.DraftingDrawingSheets.ToArray().Length > 0;
-                        bool isSeparateDrawing = fileName.Contains("_DRW");
-                        bool isAssembly = hasComponents && !isSeparateDrawing;
 
-                        string fileType = isSeparateDrawing ? "DRW" : (isAssembly ? "ASM" : "MOD");
+                        // ==========================================================
+                        // 1. ESTABLISH INTENT (Derive expected type from filename)
+                        // ==========================================================
+                        string fileType = "MOD"; // Default fallback
+                        if (fileName.Contains("_DRW")) fileType = "DRW";
+                        else if (fileName.Contains("_ASM")) fileType = "ASM";
+                        else if (fileName.Contains("_MOD")) fileType = "MOD";
+
+                        // ==========================================================
+                        // 2. STRUCTURAL CONSISTENCY CHECK (Intent vs. Reality)
+                        // ==========================================================
+                        bool hasRoot = workPart.ComponentAssembly.RootComponent != null;
+                        bool hasChildren = hasRoot && workPart.ComponentAssembly.RootComponent.GetChildren().Length > 0;
+
+                        // Catch the scenario where a MOD illegally contains assembly children
+                        if (fileType == "MOD" && hasChildren)
+                        {
+                            masterResults.Add(new ValidationResult(fileName, fileType, "Structure Check", ValidationStatus.Fail, "Structural mismatch: File is named as a Part (_MOD) but contains an assembly structure."));
+                        }
+
+                        // NOTE: Mismatches for empty _ASM and empty _DRW files are automatically 
+                        // caught by your existing BOMRules and DrawingRules engines!
 
                         string parsedPartNumber = "";
                         string parsedRevision = "";
                         string parsedDocType = "";
 
-                        // 1. HARD STOP NAMING CHECK
+                        // 3. HARD STOP NAMING CHECK
                         if (doNamingCheck)
                         {
                             bool namingPassed = ValidateFileName(fileName, fileType, masterResults, out parsedPartNumber, out parsedRevision, out parsedDocType);
@@ -70,19 +87,25 @@ namespace CADValidator.Core
                             SilentParseFileName(fileName, out parsedPartNumber, out parsedRevision, out parsedDocType);
                         }
 
-                        // 2. ROUTE TO ATTRIBUTES
+                        // 4. ROUTE TO ATTRIBUTES
                         if (doAttributeCheck)
                         {
-                            ValidateAttributes(workPart, fileType, parsedPartNumber, parsedRevision, parsedDocType, masterResults);
+                            masterResults.AddRange(CADValidator.Rules.AttributeRules.RunAttributeChecks(workPart, fileName, fileType, parsedPartNumber, parsedRevision, parsedDocType));
                         }
 
-                        // 3. ROUTE TO BOM CHECK (Calling your external BOMRules.cs)
+                        // 5. ROUTE TO LIFECYCLE CHECK
+                        if (doLifecycleCheck)
+                        {
+                            ValidateLifecycle(workPart, fileName, fileType, masterResults);
+                        }
+
+                        // 6. ROUTE TO BOM CHECK
                         if (doBomCheck)
                         {
                             masterResults.AddRange(CADValidator.Rules.BOMRules.RunBOMChecks(workPart, fileName, fileType, theUfSession));
                         }
 
-                        // 4. ROUTE TO DRAWING CHECK (Calling your external DrawingRules.cs)
+                        // 7. ROUTE TO DRAWING CHECK
                         if (doDrawingCheck)
                         {
                             masterResults.AddRange(CADValidator.Rules.DrawingRules.RunDrawingChecks(workPart, fileName, fileType));
@@ -101,7 +124,7 @@ namespace CADValidator.Core
                 {
                     if (loadedPart != null)
                     {
-                        try { /* loadedPart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null); */ }
+                        try { loadedPart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null); }
                         catch { }
                     }
                     if (loadStatus != null) loadStatus.Dispose();
@@ -147,108 +170,37 @@ namespace CADValidator.Core
             }
         }
 
-        private void ValidateAttributes(NXOpen.Part part, string fileType, string parsedPartNum, string parsedRev, string parsedDocType, List<ValidationResult> results)
+        private void ValidateLifecycle(NXOpen.Part part, string fileName, string fileType, List<ValidationResult> results)
         {
-            bool isEmbedded = false;
-            if (part.HasUserAttribute("DRAWING_LOCATION", NXObject.AttributeType.String, -1))
+            try
             {
-                string loc = part.GetStringUserAttribute("DRAWING_LOCATION", -1).ToUpper();
-                if (loc == "EMBEDDED") isEmbedded = true;
-            }
-
-            string[] modList = { "DESCRIPTION", "DOC_TYPE", "HAS_DRAWING", "LIFECYCLE_STATUS", "OWNER_DEPT", "PART_NUMBER", "REVISION", "MATERIAL" };
-            string[] asmList = { "TOTAL_COMPONENTS", "ASSEMBLY_TYPE", "BOM_REQUIRED", "DESCRIPTION", "DOC_TYPE", "DRAWING_LOCATION", "HAS_DRAWING", "LIFECYCLE_STATUS", "OWNER_DEPT", "PART_NUMBER", "REVISION" };
-            string[] drwList = { "APPROVED_BY", "CHECKED_BY", "DESCRIPTION", "DOC_TYPE", "DRAWING_NUMBER", "DRAWING_TITLE", "DRAWN_BY", "FIRST_ISSUE_DATE", "GENERAL_TOL_NOTE", "LIFECYCLE_STATUS", "MAIN_SCALE", "OWNER_DEPT", "PART_NUMBER", "PROJECTION_TYPE", "REVISION", "SHEET_COUNT" };
-
-            HashSet<string> requiredAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            if (fileType == "MOD")
-            {
-                requiredAttributes.UnionWith(modList);
-            }
-            else if (fileType == "ASM")
-            {
-                requiredAttributes.UnionWith(asmList);
-            }
-            else if (fileType == "DRW")
-            {
-                requiredAttributes.UnionWith(drwList);
-            }
-
-            if (isEmbedded && (fileType == "MOD" || fileType == "ASM"))
-            {
-                requiredAttributes.UnionWith(drwList);
-            }
-
-            foreach (string reqAttr in requiredAttributes)
-            {
-                string upperReqAttr = reqAttr.ToUpper();
-
-                try
+                if (part.HasUserAttribute("LIFECYCLE_STATUS", NXObject.AttributeType.String, -1))
                 {
-                    if (upperReqAttr == "SHEET_COUNT" || upperReqAttr == "TOTAL_COMPONENTS")
+                    string status = part.GetStringUserAttribute("LIFECYCLE_STATUS", -1).Trim().ToUpper();
+
+                    string[] validStatuses = { "RELEASED", "APPROVED", "IN_WORK" };
+
+                    if (string.IsNullOrWhiteSpace(status))
                     {
-                        if (part.HasUserAttribute(upperReqAttr, NXObject.AttributeType.Integer, -1))
-                        {
-                            int intValue = part.GetIntegerUserAttribute(upperReqAttr, -1);
-                            results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Pass, $"Found '{upperReqAttr}': {intValue}"));
-                        }
-                        else
-                        {
-                            results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"Missing required integer attribute: '{upperReqAttr}'"));
-                        }
+                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, "LIFECYCLE_STATUS attribute is blank."));
+                    }
+                    else if (validStatuses.Contains(status))
+                    {
+                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Pass, $"Valid lifecycle state: {status}"));
                     }
                     else
                     {
-                        if (part.HasUserAttribute(upperReqAttr, NXObject.AttributeType.String, -1))
-                        {
-                            string attrValue = part.GetStringUserAttribute(upperReqAttr, -1).Trim();
-                            string upperAttrValue = attrValue.ToUpper();
-
-                            if (string.IsNullOrWhiteSpace(attrValue))
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"Attribute '{upperReqAttr}' is blank."));
-                                continue;
-                            }
-
-                            bool failedCrossCheck = false;
-
-                            if (upperReqAttr == "DOC_TYPE" && upperAttrValue != parsedDocType)
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"DOC_TYPE ({upperAttrValue}) does not match file name ({parsedDocType})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "REVISION" && upperAttrValue != parsedRev)
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"REVISION ({upperAttrValue}) does not match file name ({parsedRev})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "PART_NUMBER" && upperAttrValue != parsedPartNum)
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"PART_NUMBER ({upperAttrValue}) does not match file name ({parsedPartNum})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "DRAWING_NUMBER" && upperAttrValue != parsedPartNum)
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"DRAWING_NUMBER ({upperAttrValue}) must match PART_NUMBER ({parsedPartNum})."));
-                                failedCrossCheck = true;
-                            }
-
-                            if (!failedCrossCheck)
-                            {
-                                results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Pass, $"Found '{upperReqAttr}': {attrValue}"));
-                            }
-                        }
-                        else
-                        {
-                            results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"Missing required attribute: '{upperReqAttr}'"));
-                        }
+                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, $"State '{status}' is not approved for export."));
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    results.Add(new ValidationResult(part.Name, fileType, "Attributes", ValidationStatus.Fail, $"Error checking '{upperReqAttr}': {ex.Message}"));
+                    results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, "Missing required attribute: 'LIFECYCLE_STATUS'"));
                 }
+            }
+            catch (Exception ex)
+            {
+                results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, $"Error checking Lifecycle: {ex.Message}"));
             }
         }
     }
