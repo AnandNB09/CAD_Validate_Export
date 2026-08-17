@@ -8,7 +8,7 @@
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>CAD_Validate_Export</RootNamespace>
-    <AssemblyName>CAD_Validate&amp;Export</AssemblyName>
+    <AssemblyName>CAD_Validate_Export</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
