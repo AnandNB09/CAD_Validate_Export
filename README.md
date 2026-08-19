@@ -3,7 +3,9 @@
 A Siemens NXOpen-based CAD automation plugin developed in C# to automate CAD data validation and downstream deliverable generation.
 
 
+[badges]
 
+![CAD Validate & Export - Main UI](screenshots/main-ui.png)
 
 
 
