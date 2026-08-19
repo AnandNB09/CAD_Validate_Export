@@ -10,16 +10,21 @@ namespace CADValidator.Core
 {
     public class ValidatorEngine
     {
-        private Session theSession;
-        private UFSession theUfSession;
+        private readonly Session theSession;
+        private readonly UFSession theUfSession;
 
-        private bool doNamingCheck;
-        private bool doAttributeCheck;
-        private bool doLifecycleCheck;
-        private bool doDrawingCheck;
-        private bool doBomCheck;
+        private readonly bool doNamingCheck;
+        private readonly bool doAttributeCheck;
+        private readonly bool doLifecycleCheck;
+        private readonly bool doDrawingCheck;
+        private readonly bool doBomCheck;
 
-        public ValidatorEngine(bool naming, bool attributes, bool lifecycle, bool drawing, bool bom)
+        public ValidatorEngine(
+            bool naming,
+            bool attributes,
+            bool lifecycle,
+            bool drawing,
+            bool bom)
         {
             theSession = Session.GetSession();
             theUfSession = UFSession.GetUFSession();
@@ -35,6 +40,11 @@ namespace CADValidator.Core
         {
             List<ValidationResult> masterResults = new List<ValidationResult>();
 
+            if (filePaths == null || filePaths.Count == 0)
+            {
+                return masterResults;
+            }
+
             foreach (string path in filePaths)
             {
                 BasePart loadedPart = null;
@@ -42,104 +52,232 @@ namespace CADValidator.Core
 
                 try
                 {
-                    loadedPart = theSession.Parts.OpenBase(path, out loadStatus);
+                    loadedPart = theSession.Parts.OpenBase(
+                        path,
+                        out loadStatus);
 
-                    if (loadedPart != null && loadedPart is Part workPart)
+                    if (loadedPart == null || !(loadedPart is Part workPart))
                     {
-                        string fileName = workPart.Leaf.ToUpper();
+                        masterResults.Add(
+                            new ValidationResult(
+                                path,
+                                "UNKNOWN",
+                                "File Load",
+                                ValidationStatus.Fail,
+                                "Could not open file in NX."));
 
-                        // ==========================================================
-                        // 1. ESTABLISH INTENT (Derive expected type from filename)
-                        // ==========================================================
-                        string fileType = "MOD"; // Default fallback
-                        if (fileName.Contains("_DRW")) fileType = "DRW";
-                        else if (fileName.Contains("_ASM")) fileType = "ASM";
-                        else if (fileName.Contains("_MOD")) fileType = "MOD";
+                        continue;
+                    }
 
-                        // ==========================================================
-                        // 2. STRUCTURAL CONSISTENCY CHECK (Intent vs. Reality)
-                        // ==========================================================
-                        bool hasRoot = workPart.ComponentAssembly.RootComponent != null;
-                        bool hasChildren = hasRoot && workPart.ComponentAssembly.RootComponent.GetChildren().Length > 0;
+                    string fileName = workPart.Leaf.ToUpperInvariant();
 
-                        // Catch the scenario where a MOD illegally contains assembly children
-                        if (fileType == "MOD" && hasChildren)
+                    // ==========================================================
+                    // 1. ESTABLISH DOCUMENT TYPE
+                    // ==========================================================
+
+                    string fileType = DetermineFileType(fileName);
+
+                    // ==========================================================
+                    // 2. STRUCTURAL CONSISTENCY CHECK
+                    // ==========================================================
+
+                    bool hasRoot =
+                        workPart.ComponentAssembly.RootComponent != null;
+
+                    bool hasChildren =
+                        hasRoot &&
+                        workPart.ComponentAssembly.RootComponent
+                            .GetChildren()
+                            .Length > 0;
+
+                    // A MOD file should not contain an assembly structure.
+                    if (fileType == "MOD" && hasChildren)
+                    {
+                        masterResults.Add(
+                            new ValidationResult(
+                                fileName,
+                                fileType,
+                                "Structure Check",
+                                ValidationStatus.Fail,
+                                "Structural mismatch: File is named as a Part (_MOD) but contains an assembly structure."));
+                    }
+
+                    string parsedPartNumber = string.Empty;
+                    string parsedRevision = string.Empty;
+                    string parsedDocType = string.Empty;
+
+                    // ==========================================================
+                    // 3. NAMING VALIDATION / FILE NAME PARSING
+                    // ==========================================================
+
+                    if (doNamingCheck)
+                    {
+                        bool namingPassed = ValidateFileName(
+                            fileName,
+                            fileType,
+                            masterResults,
+                            out parsedPartNumber,
+                            out parsedRevision,
+                            out parsedDocType);
+
+                        // Naming validation is treated as a hard stop because
+                        // downstream attribute cross-checks depend on the
+                        // parsed filename values.
+                        if (!namingPassed)
                         {
-                            masterResults.Add(new ValidationResult(fileName, fileType, "Structure Check", ValidationStatus.Fail, "Structural mismatch: File is named as a Part (_MOD) but contains an assembly structure."));
-                        }
-
-                        // NOTE: Mismatches for empty _ASM and empty _DRW files are automatically 
-                        // caught by your existing BOMRules and DrawingRules engines!
-
-                        string parsedPartNumber = "";
-                        string parsedRevision = "";
-                        string parsedDocType = "";
-
-                        // 3. HARD STOP NAMING CHECK
-                        if (doNamingCheck)
-                        {
-                            bool namingPassed = ValidateFileName(fileName, fileType, masterResults, out parsedPartNumber, out parsedRevision, out parsedDocType);
-
-                            if (!namingPassed) continue;
-                        }
-                        else
-                        {
-                            SilentParseFileName(fileName, out parsedPartNumber, out parsedRevision, out parsedDocType);
-                        }
-
-                        // 4. ROUTE TO ATTRIBUTES
-                        if (doAttributeCheck)
-                        {
-                            masterResults.AddRange(CADValidator.Rules.AttributeRules.RunAttributeChecks(workPart, fileName, fileType, parsedPartNumber, parsedRevision, parsedDocType));
-                        }
-
-                        // 5. ROUTE TO LIFECYCLE CHECK
-                        if (doLifecycleCheck)
-                        {
-                            ValidateLifecycle(workPart, fileName, fileType, masterResults);
-                        }
-
-                        // 6. ROUTE TO BOM CHECK
-                        if (doBomCheck)
-                        {
-                            masterResults.AddRange(CADValidator.Rules.BOMRules.RunBOMChecks(workPart, fileName, fileType, theUfSession));
-                        }
-
-                        // 7. ROUTE TO DRAWING CHECK
-                        if (doDrawingCheck)
-                        {
-                            masterResults.AddRange(CADValidator.Rules.DrawingRules.RunDrawingChecks(workPart, fileName, fileType));
+                            continue;
                         }
                     }
                     else
                     {
-                        masterResults.Add(new ValidationResult(path, "UNKNOWN", "File Load", ValidationStatus.Fail, "Could not open file in NX."));
+                        SilentParseFileName(
+                            fileName,
+                            out parsedPartNumber,
+                            out parsedRevision,
+                            out parsedDocType);
+                    }
+
+                    // ==========================================================
+                    // 4. ATTRIBUTE VALIDATION
+                    // ==========================================================
+
+                    if (doAttributeCheck)
+                    {
+                        masterResults.AddRange(
+                            AttributeRules.RunAttributeChecks(
+                                workPart,
+                                fileName,
+                                fileType,
+                                parsedPartNumber,
+                                parsedRevision,
+                                parsedDocType));
+                    }
+
+                    // ==========================================================
+                    // 5. LIFECYCLE VALIDATION
+                    // ==========================================================
+
+                    if (doLifecycleCheck)
+                    {
+                        ValidateLifecycle(
+                            workPart,
+                            fileName,
+                            fileType,
+                            masterResults);
+                    }
+
+                    // ==========================================================
+                    // 6. BOM VALIDATION
+                    // ==========================================================
+
+                    if (doBomCheck)
+                    {
+                        masterResults.AddRange(
+                            BOMRules.RunBOMChecks(
+                                workPart,
+                                fileName,
+                                fileType,
+                                theUfSession));
+                    }
+
+                    // ==========================================================
+                    // 7. DRAWING VALIDATION
+                    // ==========================================================
+
+                    if (doDrawingCheck)
+                    {
+                        masterResults.AddRange(
+                            DrawingRules.RunDrawingChecks(
+                                workPart,
+                                fileName,
+                                fileType));
                     }
                 }
                 catch (Exception ex)
                 {
-                    masterResults.Add(new ValidationResult(path, "ERROR", "System", ValidationStatus.Fail, $"Crash during processing: {ex.Message}"));
+                    masterResults.Add(
+                        new ValidationResult(
+                            path,
+                            "ERROR",
+                            "System",
+                            ValidationStatus.Fail,
+                            $"Crash during processing: {ex.Message}"));
                 }
                 finally
                 {
+                    // Always close the part opened for this validation cycle.
                     if (loadedPart != null)
                     {
-                        try { loadedPart.Close(BasePart.CloseWholeTree.False, BasePart.CloseModified.CloseModified, null); }
-                        catch { }
+                        try
+                        {
+                            loadedPart.Close(
+                                BasePart.CloseWholeTree.False,
+                                BasePart.CloseModified.CloseModified,
+                                null);
+                        }
+                        catch
+                        {
+                            // Do not allow cleanup failure to interrupt
+                            // processing of subsequent files.
+                        }
                     }
-                    if (loadStatus != null) loadStatus.Dispose();
+
+                    if (loadStatus != null)
+                    {
+                        try
+                        {
+                            loadStatus.Dispose();
+                        }
+                        catch
+                        {
+                            // Ignore cleanup errors.
+                        }
+                    }
                 }
             }
 
             return masterResults;
         }
 
-        private bool ValidateFileName(string cleanFileName, string fileType, List<ValidationResult> results, out string partNum, out string rev, out string docType)
+        private string DetermineFileType(string fileName)
         {
-            partNum = ""; rev = ""; docType = "";
+            if (fileName.Contains("_DRW"))
+            {
+                return "DRW";
+            }
 
-            string pattern = @"^([A-Z]{3}-\d{3})_([A-Z])_(MOD|DRW|ASM)$";
-            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(cleanFileName, pattern);
+            if (fileName.Contains("_ASM"))
+            {
+                return "ASM";
+            }
+
+            if (fileName.Contains("_MOD"))
+            {
+                return "MOD";
+            }
+
+            return "MOD";
+        }
+
+        private bool ValidateFileName(
+            string cleanFileName,
+            string fileType,
+            List<ValidationResult> results,
+            out string partNum,
+            out string rev,
+            out string docType)
+        {
+            partNum = string.Empty;
+            rev = string.Empty;
+            docType = string.Empty;
+
+            string pattern =
+                @"^([A-Z]{3}-\d{3})_([A-Z])_(MOD|DRW|ASM)$";
+
+            System.Text.RegularExpressions.Match match =
+                System.Text.RegularExpressions.Regex.Match(
+                    cleanFileName,
+                    pattern);
 
             if (match.Success)
             {
@@ -147,21 +285,46 @@ namespace CADValidator.Core
                 rev = match.Groups[2].Value;
                 docType = match.Groups[3].Value;
 
-                results.Add(new ValidationResult(cleanFileName, fileType, "Naming", ValidationStatus.Pass, "File name matches the strict enterprise convention."));
+                results.Add(
+                    new ValidationResult(
+                        cleanFileName,
+                        fileType,
+                        "Naming",
+                        ValidationStatus.Pass,
+                        "File name matches the strict enterprise convention."));
+
                 return true;
             }
-            else
-            {
-                results.Add(new ValidationResult(cleanFileName, fileType, "Naming", ValidationStatus.Fail, "Invalid format. Expected: XXX-000_X_TYPE."));
-                return false;
-            }
+
+            results.Add(
+                new ValidationResult(
+                    cleanFileName,
+                    fileType,
+                    "Naming",
+                    ValidationStatus.Fail,
+                    "Invalid format. Expected: XXX-000_X_TYPE."));
+
+            return false;
         }
 
-        private void SilentParseFileName(string cleanFileName, out string partNum, out string rev, out string docType)
+        private void SilentParseFileName(
+            string cleanFileName,
+            out string partNum,
+            out string rev,
+            out string docType)
         {
-            partNum = ""; rev = ""; docType = "";
-            string pattern = @"^([A-Z]{3}-\d{3})_([A-Z])_(MOD|DRW|ASM)$";
-            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(cleanFileName, pattern);
+            partNum = string.Empty;
+            rev = string.Empty;
+            docType = string.Empty;
+
+            string pattern =
+                @"^([A-Z]{3}-\d{3})_([A-Z])_(MOD|DRW|ASM)$";
+
+            System.Text.RegularExpressions.Match match =
+                System.Text.RegularExpressions.Regex.Match(
+                    cleanFileName,
+                    pattern);
+
             if (match.Success)
             {
                 partNum = match.Groups[1].Value;
@@ -170,37 +333,93 @@ namespace CADValidator.Core
             }
         }
 
-        private void ValidateLifecycle(NXOpen.Part part, string fileName, string fileType, List<ValidationResult> results)
+        private void ValidateLifecycle(
+            Part part,
+            string fileName,
+            string fileType,
+            List<ValidationResult> results)
         {
+            const string lifecycleAttribute = "LIFECYCLE_STATUS";
+
             try
             {
-                if (part.HasUserAttribute("LIFECYCLE_STATUS", NXObject.AttributeType.String, -1))
+                if (!part.HasUserAttribute(
+                        lifecycleAttribute,
+                        NXObject.AttributeType.String,
+                        -1))
                 {
-                    string status = part.GetStringUserAttribute("LIFECYCLE_STATUS", -1).Trim().ToUpper();
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Lifecycle",
+                            ValidationStatus.Fail,
+                            $"Missing required attribute: '{lifecycleAttribute}'"));
 
-                    string[] validStatuses = { "RELEASED", "APPROVED", "IN_WORK" };
+                    return;
+                }
 
-                    if (string.IsNullOrWhiteSpace(status))
-                    {
-                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, "LIFECYCLE_STATUS attribute is blank."));
-                    }
-                    else if (validStatuses.Contains(status))
-                    {
-                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Pass, $"Valid lifecycle state: {status}"));
-                    }
-                    else
-                    {
-                        results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, $"State '{status}' is not approved for export."));
-                    }
+                string status =
+                    part.GetStringUserAttribute(
+                        lifecycleAttribute,
+                        -1)
+                    .Trim()
+                    .ToUpperInvariant();
+
+                if (string.IsNullOrWhiteSpace(status))
+                {
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Lifecycle",
+                            ValidationStatus.Fail,
+                            $"{lifecycleAttribute} attribute is blank."));
+
+                    return;
+                }
+
+                // These are the lifecycle states currently accepted
+                // by this application.
+                string[] validStatuses =
+                {
+                    "RELEASED",
+                    "APPROVED",
+                    "IN_WORK"
+                };
+
+                if (validStatuses.Contains(
+                        status,
+                        StringComparer.OrdinalIgnoreCase))
+                {
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Lifecycle",
+                            ValidationStatus.Pass,
+                            $"Valid lifecycle state: {status}"));
                 }
                 else
                 {
-                    results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, "Missing required attribute: 'LIFECYCLE_STATUS'"));
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Lifecycle",
+                            ValidationStatus.Fail,
+                            $"State '{status}' is not approved for export."));
                 }
             }
             catch (Exception ex)
             {
-                results.Add(new ValidationResult(fileName, fileType, "Lifecycle", ValidationStatus.Fail, $"Error checking Lifecycle: {ex.Message}"));
+                results.Add(
+                    new ValidationResult(
+                        fileName,
+                        fileType,
+                        "Lifecycle",
+                        ValidationStatus.Fail,
+                        $"Error checking Lifecycle: {ex.Message}"));
             }
         }
     }

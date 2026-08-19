@@ -1,120 +1,377 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using NXOpen;
 using CADValidator.Models;
 
 namespace CADValidator.Rules
 {
-    public class AttributeRules
+    public static class AttributeRules
     {
-        public static List<ValidationResult> RunAttributeChecks(NXOpen.Part part, string fileName, string fileType, string parsedPartNum, string parsedRev, string parsedDocType)
+        public static List<ValidationResult> RunAttributeChecks(
+            Part part,
+            string fileName,
+            string fileType,
+            string parsedPartNum,
+            string parsedRev,
+            string parsedDocType)
         {
-            List<ValidationResult> results = new List<ValidationResult>();
+            List<ValidationResult> results =
+                new List<ValidationResult>();
+
+            if (part == null)
+            {
+                results.Add(
+                    new ValidationResult(
+                        fileName,
+                        fileType,
+                        "Attributes",
+                        ValidationStatus.Fail,
+                        "NX part reference is null."));
+
+                return results;
+            }
 
             bool isEmbedded = false;
-            if (part.HasUserAttribute("DRAWING_LOCATION", NXObject.AttributeType.String, -1))
+
+            // ==============================================================
+            // DRAWING LOCATION
+            // ==============================================================
+
+            if (part.HasUserAttribute(
+                    "DRAWING_LOCATION",
+                    NXObject.AttributeType.String,
+                    -1))
             {
-                string loc = part.GetStringUserAttribute("DRAWING_LOCATION", -1).ToUpper();
-                if (loc == "EMBEDDED") isEmbedded = true;
+                string location =
+                    part.GetStringUserAttribute(
+                        "DRAWING_LOCATION",
+                        -1);
+
+                if (!string.IsNullOrWhiteSpace(location) &&
+                    string.Equals(
+                        location.Trim(),
+                        "EMBEDDED",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    isEmbedded = true;
+                }
             }
 
-            string[] modList = { "DESCRIPTION", "DOC_TYPE", "HAS_DRAWING", "OWNER_DEPT", "PART_NUMBER", "REVISION", "MATERIAL" };
-            string[] asmList = { "TOTAL_COMPONENTS", "ASSEMBLY_TYPE", "BOM_REQUIRED", "DESCRIPTION", "DOC_TYPE", "DRAWING_LOCATION", "HAS_DRAWING", "OWNER_DEPT", "PART_NUMBER", "REVISION" };
-            string[] drwList = { "APPROVED_BY", "CHECKED_BY", "DESCRIPTION", "DOC_TYPE", "DRAWING_NUMBER", "DRAWING_TITLE", "DRAWN_BY", "FIRST_ISSUE_DATE", "GENERAL_TOL_NOTE", "MAIN_SCALE", "OWNER_DEPT", "PART_NUMBER", "PROJECTION_TYPE", "REVISION", "SHEET_COUNT" };
+            // ==============================================================
+            // REQUIRED ATTRIBUTE DEFINITIONS
+            // ==============================================================
 
-            HashSet<string> requiredAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string[] modList =
+            {
+                "DESCRIPTION",
+                "DOC_TYPE",
+                "HAS_DRAWING",
+                "OWNER_DEPT",
+                "PART_NUMBER",
+                "REVISION",
+                "MATERIAL"
+            };
 
-            if (fileType == "MOD")
+            string[] asmList =
             {
-                requiredAttributes.UnionWith(modList);
-            }
-            else if (fileType == "ASM")
+                "TOTAL_COMPONENTS",
+                "ASSEMBLY_TYPE",
+                "BOM_REQUIRED",
+                "DESCRIPTION",
+                "DOC_TYPE",
+                "DRAWING_LOCATION",
+                "HAS_DRAWING",
+                "OWNER_DEPT",
+                "PART_NUMBER",
+                "REVISION"
+            };
+
+            string[] drwList =
             {
-                requiredAttributes.UnionWith(asmList);
+                "APPROVED_BY",
+                "CHECKED_BY",
+                "DESCRIPTION",
+                "DOC_TYPE",
+                "DRAWING_NUMBER",
+                "DRAWING_TITLE",
+                "DRAWN_BY",
+                "FIRST_ISSUE_DATE",
+                "GENERAL_TOL_NOTE",
+                "MAIN_SCALE",
+                "OWNER_DEPT",
+                "PART_NUMBER",
+                "PROJECTION_TYPE",
+                "REVISION",
+                "SHEET_COUNT"
+            };
+
+            HashSet<string> requiredAttributes =
+                new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+
+            switch (fileType)
+            {
+                case "MOD":
+                    requiredAttributes.UnionWith(modList);
+                    break;
+
+                case "ASM":
+                    requiredAttributes.UnionWith(asmList);
+                    break;
+
+                case "DRW":
+                    requiredAttributes.UnionWith(drwList);
+                    break;
             }
-            else if (fileType == "DRW")
+
+            // An embedded drawing requires drawing metadata
+            // even when the source document is a MOD or ASM.
+            if (isEmbedded &&
+                (fileType == "MOD" || fileType == "ASM"))
             {
                 requiredAttributes.UnionWith(drwList);
             }
 
-            if (isEmbedded && (fileType == "MOD" || fileType == "ASM"))
-            {
-                requiredAttributes.UnionWith(drwList);
-            }
+            // ==============================================================
+            // ATTRIBUTE VALIDATION
+            // ==============================================================
 
-            foreach (string reqAttr in requiredAttributes)
+            foreach (string requiredAttribute in requiredAttributes)
             {
-                string upperReqAttr = reqAttr.ToUpper();
-
                 try
                 {
-                    if (upperReqAttr == "SHEET_COUNT" || upperReqAttr == "TOTAL_COMPONENTS")
-                    {
-                        if (part.HasUserAttribute(upperReqAttr, NXObject.AttributeType.Integer, -1))
-                        {
-                            int intValue = part.GetIntegerUserAttribute(upperReqAttr, -1);
-                            results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Pass, $"Found '{upperReqAttr}': {intValue}"));
-                        }
-                        else
-                        {
-                            results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"Missing required integer attribute: '{upperReqAttr}'"));
-                        }
-                    }
-                    else
-                    {
-                        if (part.HasUserAttribute(upperReqAttr, NXObject.AttributeType.String, -1))
-                        {
-                            string attrValue = part.GetStringUserAttribute(upperReqAttr, -1).Trim();
-                            string upperAttrValue = attrValue.ToUpper();
-
-                            if (string.IsNullOrWhiteSpace(attrValue))
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"Attribute '{upperReqAttr}' is blank."));
-                                continue;
-                            }
-
-                            bool failedCrossCheck = false;
-
-                            if (upperReqAttr == "DOC_TYPE" && upperAttrValue != parsedDocType)
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"DOC_TYPE ({upperAttrValue}) does not match file name ({parsedDocType})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "REVISION" && upperAttrValue != parsedRev)
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"REVISION ({upperAttrValue}) does not match file name ({parsedRev})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "PART_NUMBER" && upperAttrValue != parsedPartNum)
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"PART_NUMBER ({upperAttrValue}) does not match file name ({parsedPartNum})."));
-                                failedCrossCheck = true;
-                            }
-                            else if (upperReqAttr == "DRAWING_NUMBER" && upperAttrValue != parsedPartNum)
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"DRAWING_NUMBER ({upperAttrValue}) must match PART_NUMBER ({parsedPartNum})."));
-                                failedCrossCheck = true;
-                            }
-
-                            if (!failedCrossCheck)
-                            {
-                                results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Pass, $"Found '{upperReqAttr}': {attrValue}"));
-                            }
-                        }
-                        else
-                        {
-                            results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"Missing required attribute: '{upperReqAttr}'"));
-                        }
-                    }
+                    ValidateAttribute(
+                        part,
+                        fileName,
+                        fileType,
+                        requiredAttribute,
+                        parsedPartNum,
+                        parsedRev,
+                        parsedDocType,
+                        results);
                 }
                 catch (Exception ex)
                 {
-                    results.Add(new ValidationResult(fileName, fileType, "Attributes", ValidationStatus.Fail, $"Error checking '{upperReqAttr}': {ex.Message}"));
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Attributes",
+                            ValidationStatus.Fail,
+                            $"Error checking '{requiredAttribute}': {ex.Message}"));
                 }
             }
 
             return results;
+        }
+
+        private static void ValidateAttribute(
+            Part part,
+            string fileName,
+            string fileType,
+            string attributeName,
+            string parsedPartNum,
+            string parsedRev,
+            string parsedDocType,
+            List<ValidationResult> results)
+        {
+            // ==============================================================
+            // INTEGER ATTRIBUTES
+            // ==============================================================
+
+            if (IsIntegerAttribute(attributeName))
+            {
+                if (part.HasUserAttribute(
+                        attributeName,
+                        NXObject.AttributeType.Integer,
+                        -1))
+                {
+                    int value1 =
+                        part.GetIntegerUserAttribute(
+                            attributeName,
+                            -1);
+
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Attributes",
+                            ValidationStatus.Pass,
+                            $"Found '{attributeName}': {value1}"));
+                }
+                else
+                {
+                    results.Add(
+                        new ValidationResult(
+                            fileName,
+                            fileType,
+                            "Attributes",
+                            ValidationStatus.Fail,
+                            $"Missing required integer attribute: '{attributeName}'"));
+                }
+
+                return;
+            }
+
+            // ==============================================================
+            // STRING ATTRIBUTES
+            // ==============================================================
+
+            if (!part.HasUserAttribute(
+                    attributeName,
+                    NXObject.AttributeType.String,
+                    -1))
+            {
+                results.Add(
+                    new ValidationResult(
+                        fileName,
+                        fileType,
+                        "Attributes",
+                        ValidationStatus.Fail,
+                        $"Missing required attribute: '{attributeName}'"));
+
+                return;
+            }
+
+            string value =
+                part.GetStringUserAttribute(
+                    attributeName,
+                    -1);
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                results.Add(
+                    new ValidationResult(
+                        fileName,
+                        fileType,
+                        "Attributes",
+                        ValidationStatus.Fail,
+                        $"Attribute '{attributeName}' is blank."));
+
+                return;
+            }
+
+            value = value.Trim();
+
+            // ==============================================================
+            // CROSS-VALIDATION
+            // ==============================================================
+
+            string crossCheckFailure =
+                GetCrossCheckFailureMessage(
+                    attributeName,
+                    value,
+                    parsedPartNum,
+                    parsedRev,
+                    parsedDocType);
+
+            if (!string.IsNullOrEmpty(crossCheckFailure))
+            {
+                results.Add(
+                    new ValidationResult(
+                        fileName,
+                        fileType,
+                        "Attributes",
+                        ValidationStatus.Fail,
+                        crossCheckFailure));
+
+                return;
+            }
+
+            results.Add(
+                new ValidationResult(
+                    fileName,
+                    fileType,
+                    "Attributes",
+                    ValidationStatus.Pass,
+                    $"Found '{attributeName}': {value}"));
+        }
+
+        private static bool IsIntegerAttribute(string attributeName)
+        {
+            return string.Equals(
+                       attributeName,
+                       "SHEET_COUNT",
+                       StringComparison.OrdinalIgnoreCase)
+                   ||
+                   string.Equals(
+                       attributeName,
+                       "TOTAL_COMPONENTS",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetCrossCheckFailureMessage(
+            string attributeName,
+            string attributeValue,
+            string parsedPartNum,
+            string parsedRev,
+            string parsedDocType)
+        {
+            if (string.Equals(
+                    attributeName,
+                    "DOC_TYPE",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(parsedDocType) &&
+                    !string.Equals(
+                        attributeValue,
+                        parsedDocType,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return
+                        $"DOC_TYPE ({attributeValue}) does not match file name ({parsedDocType}).";
+                }
+            }
+
+            if (string.Equals(
+                    attributeName,
+                    "REVISION",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(parsedRev) &&
+                    !string.Equals(
+                        attributeValue,
+                        parsedRev,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return
+                        $"REVISION ({attributeValue}) does not match file name ({parsedRev}).";
+                }
+            }
+
+            if (string.Equals(
+                    attributeName,
+                    "PART_NUMBER",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(parsedPartNum) &&
+                    !string.Equals(
+                        attributeValue,
+                        parsedPartNum,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return
+                        $"PART_NUMBER ({attributeValue}) does not match file name ({parsedPartNum}).";
+                }
+            }
+
+            if (string.Equals(
+                    attributeName,
+                    "DRAWING_NUMBER",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(parsedPartNum) &&
+                    !string.Equals(
+                        attributeValue,
+                        parsedPartNum,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return
+                        $"DRAWING_NUMBER ({attributeValue}) must match PART_NUMBER ({parsedPartNum}).";
+                }
+            }
+
+            return string.Empty;
         }
     }
 }
