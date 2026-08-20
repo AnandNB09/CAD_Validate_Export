@@ -305,7 +305,7 @@ The ValidatorEngine acts as the orchestration layer and routes validation reques
           ┌────────────────┼────────────────┐
           │                │                │
           ▼                ▼                ▼
-   AttributeRules    Lifecycle Check    BOMRules
+    AttributeRules    Lifecycle Check    BOMRules
           │                │                │
           └────────────────┼────────────────┘
                            │
@@ -319,30 +319,30 @@ This approach keeps the validation logic separated from the main processing work
 
 📂 Project Structure
 
-CAD_Validate&Export/
-│
-├── Core/
-│   └── ValidatorEngine.cs
-│
-├── Export/
-│   ├── ExportCandidate.cs
-│   └── ExportEngine.cs
-│
-├── Models/
-│   ├── ValidationResult.cs
-│   └── ValidationStatus.cs
-│
-├── Rules/
-│   ├── AttributeRules.cs
-│   ├── BOMRules.cs
-│   └── DrawingRules.cs
-│
-├── UI/
-│   └── FinalBlockUIforValidator.cs
-│
-├── CAD_Validate_Export.csproj
-├── CAD_Validate_Export.sln
-└── LICENSE.txt
+    CAD_Validate&Export/
+    │
+    ├── Core/
+    │   └── ValidatorEngine.cs
+    │
+    ├── Export/
+    │   ├── ExportCandidate.cs
+    │   └── ExportEngine.cs
+    │
+    ├── Models/
+    │   ├── ValidationResult.cs
+    │   └── ValidationStatus.cs
+    │
+    ├── Rules/
+    │   ├── AttributeRules.cs
+    │   ├── BOMRules.cs
+    │   └── DrawingRules.cs
+    │
+    ├── UI/
+    │   └── FinalBlockUIforValidator.cs
+    │
+    ├── CAD_Validate_Export.csproj
+    ├── CAD_Validate_Export.sln
+    └── LICENSE.txt
 
 Core/
 
